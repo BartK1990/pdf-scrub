@@ -4,6 +4,8 @@
 
 Your file is never uploaded. All processing happens in your browser tab.
 
+**▶ Use it here: https://bartk1990.github.io/pdf-scrub/**
+
 ## What it does
 
 | | |
