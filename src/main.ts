@@ -1,7 +1,7 @@
 import "./style.css";
 import { connect, RpcError } from "./api.ts";
 import { PRESETS } from "./engine/presets.ts";
-import { ICONS, LOGO, SITE, formatCount } from "./site.ts";
+import { ICONS, SITE, formatCount } from "./site.ts";
 import {
   DEFAULT_EXPORT_OPTIONS,
   type DocReport,
@@ -1392,7 +1392,7 @@ function buildShell() {
     h(
       "header",
       { class: "topbar" },
-      h("a", { class: "brand", href: "./" }, icon(LOGO, "logo"), "PDF Scrub"),
+      h("a", { class: "brand", href: "./" }, h("span", { class: "logo", "aria-hidden": "true" }, "▚"), "PDF Scrub"),
       h("span", { id: "doc-name", class: "doc-name" }),
       h("span", { class: "grow" }),
       h("span", { class: "badge", title: "No server: your file is processed in this browser tab and is never uploaded." }, "🔒 Stays on your device"),

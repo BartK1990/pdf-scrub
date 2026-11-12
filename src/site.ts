@@ -39,14 +39,3 @@ export const ICONS = {
     "M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0ZM5 3.25a.75.75 0 1 0-1.5 0 .75.75 0 0 0 1.5 0Zm6.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5Zm-3 8.75a.75.75 0 1 0-1.5 0 .75.75 0 0 0 1.5 0Z",
   ),
 };
-
-/** App logo: a page whose middle line is redacted. */
-export const LOGO = `<svg viewBox="0 0 32 32" width="26" height="26" aria-hidden="true" focusable="false">
-  <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4c6ef5"/><stop offset="1" stop-color="#3b5bdb"/></linearGradient></defs>
-  <rect width="32" height="32" rx="8" fill="url(#lg)"/>
-  <path d="M9 6.5h10l5 5V25a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 8 25V8a1.5 1.5 0 0 1 1-1.5Z" fill="#fff"/>
-  <path d="M19 6.5v4.2c0 .4.3.8.8.8H24" fill="#dbe4ff"/>
-  <rect x="11" y="13.5" width="10" height="2" rx="1" fill="#adb5bd"/>
-  <rect x="11" y="17.5" width="8" height="3" rx=".6" fill="#16181d"/>
-  <rect x="11" y="22" width="7" height="2" rx="1" fill="#adb5bd"/>
-</svg>`;
