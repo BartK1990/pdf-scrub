@@ -1,0 +1,23 @@
+{
+  "name": "pdf-scrub",
+  "version": "0.1.0",
+  "description": "Remove sensitive content from PDFs in the browser before sharing them with AI tools.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc"
+  },
+  "license": "AGPL-3.0-or-later",
+  "dependencies": {
+    "mupdf": "^1.28.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.5",
+    "typescript": "^5.9.3",
+    "vite": "^8.3.8"
+  },
+  "private": true,
+  "type": "module"
+}
