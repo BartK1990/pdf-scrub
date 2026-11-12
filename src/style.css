@@ -121,17 +121,54 @@ body[data-screen="editor"] .landing, body[data-screen="editor"] .landing-only { 
 .feature p { margin: 0; color: var(--muted); font-size: 0.92rem; }
 .foot { text-align: center; color: var(--muted); font-size: 0.85rem; padding: 24px 16px; margin-top: auto; }
 
-/* Editor layout */
+/* Editor layout: fixed to the window height, so the top bar and toolbar
+   always stay visible and only the pages and panels scroll. */
+body[data-screen="editor"] #app { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
 .editor {
   flex: 1; display: grid; min-height: 0;
   grid-template-columns: 280px minmax(0, 1fr) 320px;
   grid-template-rows: auto minmax(0, 1fr);
   grid-template-areas: "toolbar toolbar toolbar" "left pages right";
-  height: calc(100vh - 53px);
 }
+body[data-thumbs="true"] .editor {
+  grid-template-columns: 280px 112px minmax(0, 1fr) 320px;
+  grid-template-areas: "toolbar toolbar toolbar toolbar" "left thumbs pages right";
+}
+.side { display: contents; }
 .toolbar {
   grid-area: toolbar; display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
   padding: 8px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
+  position: relative; z-index: 4;
+}
+.pagebox { display: inline-flex; align-items: center; gap: 4px; padding: 0 8px; font-size: 0.88rem; }
+.pagebox input {
+  width: 3.2em; text-align: center; font: inherit; padding: 3px 2px; border: 1px solid var(--border);
+  border-radius: 5px; background: var(--bg); color: var(--text);
+}
+.seg .pagebox { border-left: 1px solid var(--border); border-right: 1px solid var(--border); }
+.seg.zoom select {
+  border: 0; border-left: 1px solid var(--border); border-right: 1px solid var(--border);
+  background: transparent; color: inherit; font: inherit; font-size: 0.88rem; padding: 0 6px; cursor: pointer;
+}
+
+/* Thumbnails */
+.thumbs {
+  grid-area: thumbs; display: none; overflow-y: auto; padding: 14px 8px; background: var(--surface-2);
+  border-right: 1px solid var(--border); flex-direction: column; align-items: center; gap: 12px;
+}
+body[data-thumbs="true"] .thumbs { display: flex; }
+.thumb {
+  position: relative; border: 0; background: transparent; padding: 4px; border-radius: 6px;
+  display: flex; flex-direction: column; align-items: center; gap: 4px; flex: none;
+}
+.thumb canvas { background: #fff; box-shadow: var(--shadow); display: block; }
+.thumb:hover { background: var(--border); }
+.thumb.current { background: var(--accent-soft); outline: 2px solid var(--accent); }
+.thumb.deleted canvas { opacity: 0.3; }
+.thumb-num { font-size: 0.75rem; color: var(--muted); }
+.thumb-count {
+  position: absolute; top: 0; right: 0; min-width: 18px; height: 18px; padding: 0 4px; border-radius: 9px;
+  background: var(--danger); color: #fff; font-size: 0.7rem; line-height: 18px; text-align: center;
 }
 .panel { background: var(--surface); overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
 .panel.left { grid-area: left; border-right: 1px solid var(--border); }
@@ -169,12 +206,23 @@ body[data-screen="editor"] .landing, body[data-screen="editor"] .landing-only { 
 .opt.risky .opt-found { color: var(--warn-ink); }
 
 /* Pages */
-.pages { grid-area: pages; overflow: auto; padding: 24px; display: flex; flex-direction: column; align-items: center; gap: 24px; }
-.page { display: flex; flex-direction: column; gap: 6px; }
+/* Pages are centred with auto margins, not align-items:center, so a page
+   wider than the view can still be scrolled to its left edge. */
+.pages {
+  grid-area: pages; overflow: auto; padding: 24px; display: flex; flex-direction: column; align-items: flex-start;
+  gap: 24px; touch-action: pan-x pan-y; outline: none; overscroll-behavior: contain;
+}
+.page { display: flex; flex-direction: column; gap: 6px; margin-inline: auto; flex: none; }
+.result-banner { margin-inline: auto; }
+body.space-pan .pages, body.space-pan .overlay { cursor: grab; }
+body.panning, body.panning .pages, body.panning .overlay { cursor: grabbing !important; user-select: none; }
+.overlay[data-mode="pick"] { cursor: grab; }
+.overlay[data-mode="pick"] .obj { cursor: pointer; }
 .page-head { display: flex; justify-content: space-between; align-items: center; color: var(--muted); font-size: 0.85rem; }
 .sheet { position: relative; background: #fff; box-shadow: var(--shadow); flex: none; }
 .sheet canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
-.overlay { position: absolute; inset: 0; touch-action: none; }
+.overlay { position: absolute; inset: 0; touch-action: pan-x pan-y; }
+.overlay[data-mode="draw"] { touch-action: none; }
 .overlay[data-mode="draw"] { cursor: crosshair; }
 body[data-view="result"] .overlay { display: none; }
 .page.deleted .sheet { opacity: 0.35; }
@@ -238,12 +286,25 @@ dialog p { margin: 0; }
 
 /* Narrow screens: stack the panels under the pages. */
 @media (max-width: 980px) {
-  .editor {
-    height: auto; grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "toolbar" "pages" "left" "right";
+  .editor, body[data-thumbs="true"] .editor {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr) minmax(0, 38%);
+    grid-template-areas: "toolbar" "pages" "side";
   }
-  .pages { max-height: 75vh; padding: 16px; }
-  .panel.left, .panel.right { border: 0; border-top: 1px solid var(--border); overflow: visible; }
-  .toolbar { position: sticky; top: 53px; z-index: 4; }
+  body[data-thumbs="true"] .thumbs { display: none; }
+  .side { display: block; grid-area: side; overflow-y: auto; border-top: 1px solid var(--border); background: var(--surface); }
+  .panel.left, .panel.right { border: 0; overflow: visible; }
+  .panel.right { border-top: 1px solid var(--border); }
+  .pages { padding: 12px; gap: 16px; }
   .badge { display: none; }
+}
+/* Phones: keep the toolbar to one row that scrolls sideways. */
+@media (max-width: 700px) {
+  .toolbar { flex-wrap: nowrap; overflow-x: auto; padding: 6px 12px; scrollbar-width: none; }
+  .toolbar > * { flex: none; }
+  .toolbar .grow { display: none; }
+  .toolbar .thumbs-toggle { display: none; }
+  /* The export button stays pinned at the right while the tools scroll. */
+  .toolbar .export { position: sticky; right: 0; margin-left: auto; box-shadow: -12px 0 12px -4px var(--surface); }
+  .topbar { padding: 8px 12px; }
 }

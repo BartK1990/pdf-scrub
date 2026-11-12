@@ -56,9 +56,12 @@ const state = {
   undo: [] as Mark[][],
   redo: [] as Mark[][],
   hits: [] as Hit[],
-  mode: "draw" as "draw" | "pick",
+  mode: "pick" as "draw" | "pick",
   pickLevel: "line" as "line" | "block",
   zoom: 1,
+  zoomMode: "fit-width" as ZoomMode,
+  currentPage: 0,
+  thumbs: loadPref("thumbs", window.innerWidth >= 1280),
   view: "original" as View,
   opts: structuredClone(DEFAULT_EXPORT_OPTIONS) as ExportOptions,
   deleted: new Set<number>(),
@@ -69,6 +72,24 @@ const state = {
   /** Objects selected in Pick mode, waiting for Delete. */
   selection: new Map<string, Sel>(),
 };
+
+type ZoomMode = "fit-width" | "fit-page" | "custom";
+
+function loadPref(key: string, fallback: boolean): boolean {
+  try {
+    const v = localStorage.getItem("pdfscrub:" + key);
+    return v === null ? fallback : v === "1";
+  } catch {
+    return fallback;
+  }
+}
+function savePref(key: string, v: boolean) {
+  try {
+    localStorage.setItem("pdfscrub:" + key, v ? "1" : "0");
+  } catch {
+    /* storage unavailable: keep the in-memory value */
+  }
+}
 
 type Sel = { page: number; rect: Rect; label: string; kind: PageObject["kind"] };
 const selKey = (page: number, o: PageObject) => `${page}:${o.kind}:${o.rect.map((v) => v.toFixed(1)).join(",")}`;
@@ -170,8 +191,13 @@ async function openFile(file: File) {
     objectsCache.clear();
     state.selection.clear();
     document.body.dataset.screen = "editor";
-    state.zoom = fitZoom();
+    document.body.dataset.thumbs = String(state.thumbs);
+    state.zoomMode = "fit-width";
+    state.currentPage = 0;
+    state.zoom = fitZoom("fit-width");
     renderEditor();
+    $("#pages").scrollTo(0, 0);
+    $("#pages").focus({ preventScroll: true });
   } catch (e) {
     toast(`Could not open the file: ${(e as Error).message}`);
   } finally {
@@ -179,11 +205,20 @@ async function openFile(file: File) {
   }
 }
 
-function fitZoom(): number {
-  const area = $("#pages");
-  const w = (area?.clientWidth || 800) - 48;
-  const maxW = Math.max(...state.pages.map((p) => p.width), 1);
-  return Math.min(1.5, Math.max(0.4, +(w / maxW).toFixed(2)));
+const MIN_ZOOM = 0.2;
+const MAX_ZOOM = 6;
+const ZOOM_STEPS = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+const clampZoom = (z: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, +z.toFixed(3)));
+
+function fitZoom(mode: "fit-width" | "fit-page"): number {
+  const host = $("#pages");
+  const pages = currentPages().length ? currentPages() : state.pages;
+  const w = (host?.clientWidth || 800) - 48;
+  const hgt = (host?.clientHeight || 600) - 64;
+  const maxW = Math.max(...pages.map((p) => p.width), 1);
+  const maxH = Math.max(...pages.map((p) => p.height), 1);
+  const z = mode === "fit-page" ? Math.min(w / maxW, hgt / maxH) : w / maxW;
+  return clampZoom(Math.min(z, 3));
 }
 
 /* ------------------------------------------------------------------ */
@@ -212,8 +247,15 @@ function pageSignature(index: number): string {
   return JSON.stringify([o, marks.map((m) => m.rect)]);
 }
 
+function fetchImage(index: number, scale: number, view: View, sig: string) {
+  return sig === "plain"
+    ? remote.render(index, scale, view)
+    : remote.renderPreview(index, scale, state.marks.filter((m) => m.page === index), previewOpts());
+}
+
 /** Re-render pages already on screen whose look changed. */
 function repaintRendered() {
+  repaintThumbs();
   for (const key of renderedScale.keys()) {
     const [view, idx] = key.split(":");
     if (view === state.view) void paintPage(Number(idx));
@@ -278,6 +320,7 @@ function buildPages() {
     observer.observe(wrap);
     if (state.view === "original") renderOverlay(p.index);
   }
+  buildThumbs();
 }
 
 async function paintPage(index: number) {
@@ -292,10 +335,7 @@ async function paintPage(index: number) {
   paintToken.set(index, token);
   const view = state.view;
   try {
-    const img =
-      sig === "plain"
-        ? await remote.render(index, scale, view)
-        : await remote.renderPreview(index, scale, state.marks.filter((m) => m.page === index), previewOpts());
+    const img = await fetchImage(index, scale, view, sig);
     // Drop stale answers: the page changed again while this one was rendering.
     if (gen !== renderGen || paintToken.get(index) !== token) return;
     const canvas = $(`#pages .page[data-page="${index}"] canvas`) as HTMLCanvasElement | null;
@@ -309,13 +349,368 @@ async function paintPage(index: number) {
   }
 }
 
-function setZoom(z: number) {
+/* ------------------------------------------------------------------ */
+/* Zoom and navigation                                                 */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Zoom without rebuilding the pages: resize the sheets in place, keep the
+ * point under `anchor` (client coordinates) where it was, stretch the
+ * existing canvases right away and re-render them sharp once zooming pauses.
+ */
+function zoomTo(z: number, anchor?: { x: number; y: number }, mode: ZoomMode = "custom") {
   const host = $("#pages");
-  const ratio = host.scrollTop / Math.max(1, host.scrollHeight);
-  state.zoom = Math.min(4, Math.max(0.25, +z.toFixed(2)));
-  buildPages();
-  host.scrollTop = ratio * host.scrollHeight;
+  if (!host) return;
+  z = clampZoom(z);
+  const hr = host.getBoundingClientRect();
+  const ax = anchor ? anchor.x : hr.left + host.clientWidth / 2;
+  const ay = anchor ? anchor.y : hr.top + host.clientHeight / 2;
+
+  // Remember where the anchor sits relative to the page under it.
+  const sheets = [...host.querySelectorAll<HTMLElement>(".sheet")];
+  let ref: HTMLElement | null = null;
+  let fx = 0.5;
+  let fy = 0;
+  for (const sh of sheets) {
+    const r = sh.getBoundingClientRect();
+    if (r.bottom >= ay || sh === sheets[sheets.length - 1]) {
+      ref = sh;
+      fx = (ax - r.left) / r.width;
+      fy = (ay - r.top) / r.height;
+      break;
+    }
+  }
+
+  state.zoom = z;
+  state.zoomMode = mode;
+  const pages = currentPages();
+  for (const sh of sheets) {
+    const p = pages.find((x) => x.index === Number(sh.parentElement!.dataset.page));
+    if (!p) continue;
+    sh.style.width = `${p.width * z}px`;
+    sh.style.height = `${p.height * z}px`;
+  }
+  if (ref) {
+    const r = ref.getBoundingClientRect();
+    host.scrollLeft += r.left + fx * r.width - ax;
+    host.scrollTop += r.top + fy * r.height - ay;
+  }
+  updateZoomControl();
+  scheduleSharpen();
+}
+
+function zoomStep(dir: 1 | -1, anchor?: { x: number; y: number }) {
+  const z = state.zoom;
+  const next = dir > 0 ? ZOOM_STEPS.find((s) => s > z * 1.01) ?? z * 1.25 : [...ZOOM_STEPS].reverse().find((s) => s < z / 1.01) ?? z / 1.25;
+  zoomTo(next, anchor);
+}
+
+function zoomFit(mode: "fit-width" | "fit-page") {
+  const page = state.currentPage;
+  zoomTo(fitZoom(mode), undefined, mode);
+  goToPage(page, false);
+}
+
+let sharpenTimer = 0;
+/** After zooming pauses, re-render the pages in view at the new scale. */
+function scheduleSharpen() {
+  clearTimeout(sharpenTimer);
+  sharpenTimer = window.setTimeout(() => {
+    const host = $("#pages");
+    const hr = host.getBoundingClientRect();
+    for (const el of host.querySelectorAll<HTMLElement>(".page")) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom > hr.top - 600 && r.top < hr.bottom + 600) void paintPage(Number(el.dataset.page));
+    }
+  }, 140);
+}
+
+function updateZoomControl() {
+  const sel = document.getElementById("zoom") as HTMLSelectElement | null;
+  if (!sel) return;
+  const custom = sel.querySelector<HTMLOptionElement>('option[value="custom"]')!;
+  custom.textContent = `${Math.round(state.zoom * 100)}%`;
+  const step = ZOOM_STEPS.find((s) => Math.abs(s - state.zoom) < 0.005);
+  sel.value = state.zoomMode !== "custom" ? state.zoomMode : step !== undefined ? String(step) : "custom";
+  // The fit options show the resulting percentage too.
+  for (const m of ["fit-width", "fit-page"] as const) {
+    const o = sel.querySelector<HTMLOptionElement>(`option[value="${m}"]`)!;
+    const label = m === "fit-width" ? "Fit width" : "Fit page";
+    o.textContent = state.zoomMode === m ? `${label} (${Math.round(state.zoom * 100)}%)` : label;
+  }
+}
+
+function goToPage(i: number, smooth = false) {
+  const pages = currentPages();
+  if (!pages.length) return;
+  i = Math.max(0, Math.min(pages.length - 1, i));
+  const el = document.querySelector<HTMLElement>(`#pages .page[data-page="${pages[i].index}"]`);
+  if (!el) return;
+  const host = $("#pages");
+  const top = el.getBoundingClientRect().top - host.getBoundingClientRect().top + host.scrollTop - 12;
+  host.scrollTo({ top, behavior: smooth ? "smooth" : "auto" });
+  setCurrentPage(i);
+}
+
+function setCurrentPage(i: number) {
+  if (i === state.currentPage && document.getElementById("page-num")?.dataset.page === String(i)) return;
+  state.currentPage = i;
+  const input = document.getElementById("page-num") as HTMLInputElement | null;
+  if (input && document.activeElement !== input) {
+    input.value = String(i + 1);
+    input.dataset.page = String(i);
+  }
+  for (const t of document.querySelectorAll<HTMLElement>("#thumbs .thumb")) {
+    const on = Number(t.dataset.pos) === i;
+    t.classList.toggle("current", on);
+    if (on) t.scrollIntoView({ block: "nearest" });
+  }
+}
+
+/** Which page is "current": the one covering a line a third of the way down the view. */
+function trackCurrentPage() {
+  const host = $("#pages");
+  const hr = host.getBoundingClientRect();
+  const line = hr.top + Math.min(host.clientHeight / 3, 240);
+  const els = [...host.querySelectorAll<HTMLElement>(".page")];
+  let pos = 0;
+  for (let k = 0; k < els.length; k++) {
+    if (els[k].getBoundingClientRect().top <= line) pos = k;
+    else break;
+  }
+  setCurrentPage(pos);
+}
+
+/* Thumbnails --------------------------------------------------------- */
+
+const THUMB_W = 84;
+let thumbObserver: IntersectionObserver | null = null;
+const thumbRendered = new Map<number, string>();
+const thumbToken = new Map<number, number>();
+
+function setThumbs(on: boolean) {
+  state.thumbs = on;
+  savePref("thumbs", on);
+  document.body.dataset.thumbs = String(on);
+  buildThumbs();
   renderToolbar();
+  if (state.zoomMode !== "custom") zoomFit(state.zoomMode);
+}
+
+function buildThumbs() {
+  const rail = document.getElementById("thumbs");
+  if (!rail) return;
+  rail.replaceChildren();
+  thumbObserver?.disconnect();
+  thumbRendered.clear();
+  if (!state.thumbs) return;
+  thumbObserver = new IntersectionObserver(
+    (entries) => {
+      for (const e of entries) if (e.isIntersecting) void paintThumb(Number((e.target as HTMLElement).dataset.page));
+    },
+    { root: rail, rootMargin: "400px 0px" },
+  );
+  currentPages().forEach((p, pos) => {
+    const marks = state.view === "original" ? state.marks.filter((m) => m.page === p.index).length : 0;
+    const deleted = state.view === "original" && state.deleted.has(p.index);
+    const t = h(
+      "button",
+      {
+        class: "thumb" + (pos === state.currentPage ? " current" : "") + (deleted ? " deleted" : ""),
+        "data-page": String(p.index),
+        "data-pos": String(pos),
+        title: `Page ${p.index + 1}${marks ? ` · ${marks} redaction${marks > 1 ? "s" : ""}` : ""}${deleted ? " · will be deleted" : ""}`,
+        onclick: () => goToPage(pos, true),
+      },
+      h("canvas", { style: { width: `${THUMB_W}px`, height: `${(p.height / p.width) * THUMB_W}px` } }),
+      h("span", { class: "thumb-num" }, String(p.index + 1)),
+      marks > 0 && h("span", { class: "thumb-count" }, String(marks)),
+    );
+    rail.append(t);
+    thumbObserver!.observe(t);
+  });
+}
+
+async function paintThumb(index: number) {
+  const p = currentPages().find((x) => x.index === index);
+  if (!p) return;
+  const scale = (THUMB_W / p.width) * (window.devicePixelRatio || 1);
+  const sig = pageSignature(index);
+  if (thumbRendered.get(index) === sig) return;
+  thumbRendered.set(index, sig);
+  const token = ++tokenSeq;
+  thumbToken.set(index, token);
+  try {
+    const img = await fetchImage(index, scale, state.view, sig);
+    if (thumbToken.get(index) !== token) return;
+    const c = document.querySelector<HTMLCanvasElement>(`#thumbs .thumb[data-page="${index}"] canvas`);
+    if (!c) return;
+    c.width = img.width;
+    c.height = img.height;
+    c.getContext("2d")!.putImageData(new ImageData(img.pixels as Uint8ClampedArray<ArrayBuffer>, img.width, img.height), 0, 0);
+  } catch (e) {
+    thumbRendered.delete(index);
+    console.error(e);
+  }
+}
+
+/** Refresh thumbnail badges and images after marks or options change. */
+function repaintThumbs() {
+  if (!state.thumbs) return;
+  for (const t of document.querySelectorAll<HTMLElement>("#thumbs .thumb")) {
+    const index = Number(t.dataset.page);
+    const n = state.view === "original" ? state.marks.filter((m) => m.page === index).length : 0;
+    let badge = t.querySelector(".thumb-count");
+    if (n && !badge) t.append((badge = h("span", { class: "thumb-count" })));
+    if (badge) {
+      if (n) badge.textContent = String(n);
+      else badge.remove();
+    }
+    t.classList.toggle("deleted", state.view === "original" && state.deleted.has(index));
+    if (thumbRendered.has(index)) void paintThumb(index);
+  }
+}
+
+/* Pointer, wheel, touch and keyboard navigation ---------------------- */
+
+let cancelDraw = () => {};
+let spaceHeld = false;
+
+function setupNavigation() {
+  const host = $("#pages");
+
+  // Ctrl/Cmd + wheel, and trackpad pinch (sent as ctrl + wheel), zoom at the cursor.
+  host.addEventListener(
+    "wheel",
+    (e) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const unit = e.deltaMode === 1 ? 0.05 : e.deltaMode === 2 ? 1 : 0.0025;
+      zoomTo(state.zoom * Math.exp(-e.deltaY * unit), { x: e.clientX, y: e.clientY });
+    },
+    { passive: false },
+  );
+
+  // Safari trackpad pinch.
+  let gestureStart = 1;
+  host.addEventListener("gesturestart", (e) => {
+    e.preventDefault();
+    gestureStart = state.zoom;
+  });
+  host.addEventListener("gesturechange", (e) => {
+    e.preventDefault();
+    const g = e as unknown as { scale: number; clientX: number; clientY: number };
+    zoomTo(gestureStart * g.scale, { x: g.clientX, y: g.clientY });
+  });
+
+  // Two-finger pinch on touch screens.
+  let pinch: { d0: number; z0: number } | null = null;
+  const dist = (t: TouchList) => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const mid = (t: TouchList) => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+  host.addEventListener(
+    "touchstart",
+    (e) => {
+      if (e.touches.length === 2) {
+        cancelDraw();
+        pinch = { d0: dist(e.touches), z0: state.zoom };
+        e.preventDefault();
+      }
+    },
+    { passive: false },
+  );
+  host.addEventListener(
+    "touchmove",
+    (e) => {
+      if (!pinch || e.touches.length !== 2) return;
+      e.preventDefault();
+      zoomTo((pinch.z0 * dist(e.touches)) / pinch.d0, mid(e.touches));
+    },
+    { passive: false },
+  );
+  host.addEventListener("touchend", (e) => {
+    if (e.touches.length < 2) pinch = null;
+  });
+
+  // Panning with the mouse: middle button, Space + drag, or (in Pick mode)
+  // dragging on empty space. Runs in the capture phase, before drawing/picking.
+  let pan: { pid: number; x: number; y: number; sl: number; st: number; moved: boolean; clickTarget: HTMLElement | null } | null = null;
+  host.addEventListener(
+    "pointerdown",
+    (e) => {
+      if (e.pointerType === "touch") return; // fingers scroll natively
+      const target = e.target as HTMLElement;
+      const onEmpty = !target.closest(".obj, .mark, button, input, select");
+      const pickPan = state.mode === "pick" && e.button === 0 && onEmpty && !e.shiftKey && !e.ctrlKey && !e.metaKey;
+      const viewPan = state.view === "result" && e.button === 0;
+      if (!(e.button === 1 || (spaceHeld && e.button === 0) || pickPan || viewPan)) return;
+      pan = { pid: e.pointerId, x: e.clientX, y: e.clientY, sl: host.scrollLeft, st: host.scrollTop, moved: false, clickTarget: pickPan ? target : null };
+      host.setPointerCapture(e.pointerId);
+      if (!pickPan) document.body.classList.add("panning");
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    true,
+  );
+  host.addEventListener("pointermove", (e) => {
+    if (!pan || e.pointerId !== pan.pid) return;
+    const dx = e.clientX - pan.x;
+    const dy = e.clientY - pan.y;
+    if (!pan.moved && Math.hypot(dx, dy) < 4) return;
+    pan.moved = true;
+    document.body.classList.add("panning");
+    host.scrollLeft = pan.sl - dx;
+    host.scrollTop = pan.st - dy;
+  });
+  const endPan = (e: PointerEvent) => {
+    if (!pan || e.pointerId !== pan.pid) return;
+    // A click (no drag) on empty space in Pick mode clears the selection.
+    if (!pan.moved && pan.clickTarget?.closest(".overlay")) clearSelection();
+    pan = null;
+    document.body.classList.remove("panning");
+  };
+  host.addEventListener("pointerup", endPan);
+  host.addEventListener("pointercancel", endPan);
+
+  let raf = 0;
+  host.addEventListener("scroll", () => {
+    if (raf) return;
+    raf = requestAnimationFrame(() => {
+      raf = 0;
+      trackCurrentPage();
+    });
+  });
+
+  window.addEventListener("keyup", (e) => {
+    if (e.key === " ") {
+      spaceHeld = false;
+      document.body.classList.remove("space-pan");
+    }
+  });
+  window.addEventListener("blur", () => {
+    spaceHeld = false;
+    document.body.classList.remove("space-pan");
+  });
+}
+
+/** Keyboard shortcuts for zoom and paging. Returns true when handled. */
+function navKey(e: KeyboardEvent): boolean {
+  const mod = e.ctrlKey || e.metaKey;
+  const host = $("#pages");
+  const hScroll = host.scrollWidth > host.clientWidth + 1;
+  if (mod && (e.key === "=" || e.key === "+")) zoomStep(1);
+  else if (mod && e.key === "-") zoomStep(-1);
+  else if (mod && e.key === "0") zoomFit("fit-width");
+  else if (mod) return false;
+  else if (e.key === "PageDown" || (e.key === "ArrowRight" && !hScroll)) goToPage(state.currentPage + 1);
+  else if (e.key === "PageUp" || (e.key === "ArrowLeft" && !hScroll)) goToPage(state.currentPage - 1);
+  else if (e.key === "Home") goToPage(0);
+  else if (e.key === "End") goToPage(currentPages().length - 1);
+  else if (e.key === " ") {
+    spaceHeld = true;
+    document.body.classList.add("space-pan");
+  } else return false;
+  e.preventDefault();
+  return true;
 }
 
 function setLivePreview(on: boolean) {
@@ -330,8 +725,11 @@ function setView(v: View) {
   if (v === "result" && !state.result) return;
   state.view = v;
   document.body.dataset.view = v;
-  buildPages();
+  const page = state.currentPage;
+  if (state.zoomMode !== "custom") state.zoom = fitZoom(state.zoomMode);
   renderToolbar();
+  buildPages();
+  goToPage(Math.min(page, currentPages().length - 1));
 }
 
 function togglePageDelete(i: number) {
@@ -349,6 +747,7 @@ function togglePageDelete(i: number) {
     btn.classList.toggle("on", state.deleted.has(i));
   }
   renderMarksPanel();
+  repaintThumbs();
 }
 
 /* ------------------------------------------------------------------ */
@@ -487,11 +886,11 @@ function setupDrawing() {
     return [page.x0 + (x / r.width) * page.width, page.y0 + (y / r.height) * page.height];
   };
 
+  cancelDraw = () => {
+    drag?.box.remove();
+    drag = null;
+  };
   host.addEventListener("pointerdown", (e) => {
-    if (state.view === "original" && state.mode === "pick" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
-      if ((e.target as HTMLElement).closest(".overlay")) clearSelection();
-      return;
-    }
     if (state.view !== "original" || state.mode !== "draw" || e.button !== 0) return;
     const overlay = (e.target as HTMLElement).closest(".overlay") as HTMLElement | null;
     if (!overlay) return;
@@ -875,10 +1274,59 @@ function renderToolbar() {
     ),
     h(
       "div",
-      { class: "seg" },
-      h("button", { title: "Zoom out", onclick: () => setZoom(state.zoom / 1.2) }, "−"),
-      h("button", { title: "Fit width", onclick: () => setZoom(fitZoom()) }, `${Math.round(state.zoom * 100)}%`),
-      h("button", { title: "Zoom in", onclick: () => setZoom(state.zoom * 1.2) }, "+"),
+      { class: "seg thumbs-toggle" },
+      h("button", { title: state.thumbs ? "Hide page thumbnails" : "Show page thumbnails", class: state.thumbs ? "on" : "", onclick: () => setThumbs(!state.thumbs) }, "▤"),
+    ),
+    h(
+      "div",
+      { class: "seg pagenav", role: "group", "aria-label": "Pages" },
+      h("button", { title: "Previous page (PageUp)", onclick: () => goToPage(state.currentPage - 1) }, "‹"),
+      h(
+        "label",
+        { class: "pagebox" },
+        h("input", {
+          id: "page-num",
+          inputmode: "numeric",
+          "aria-label": "Page number",
+          value: String(state.currentPage + 1),
+          onfocus: (e: Event) => (e.target as HTMLInputElement).select(),
+          onkeydown: (e: KeyboardEvent) => {
+            if (e.key === "Enter") {
+              const n = parseInt((e.target as HTMLInputElement).value, 10);
+              if (!Number.isNaN(n)) goToPage(n - 1);
+              (e.target as HTMLInputElement).blur();
+              $("#pages").focus({ preventScroll: true });
+            } else if (e.key === "Escape") (e.target as HTMLInputElement).blur();
+          },
+          onblur: (e: Event) => ((e.target as HTMLInputElement).value = String(state.currentPage + 1)),
+        }),
+        h("span", { class: "muted" }, `/ ${currentPages().length}`),
+      ),
+      h("button", { title: "Next page (PageDown)", onclick: () => goToPage(state.currentPage + 1) }, "›"),
+    ),
+    h(
+      "div",
+      { class: "seg zoom" },
+      h("button", { title: "Zoom out (Ctrl −)", onclick: () => zoomStep(-1) }, "−"),
+      h(
+        "select",
+        {
+          id: "zoom",
+          "aria-label": "Zoom",
+          title: "Zoom (Ctrl + wheel or pinch to zoom, Ctrl 0 to fit width)",
+          onchange: (e: Event) => {
+            const v = (e.target as HTMLSelectElement).value;
+            if (v === "fit-width" || v === "fit-page") zoomFit(v);
+            else if (v !== "custom") zoomTo(Number(v));
+            $("#pages").focus({ preventScroll: true });
+          },
+        },
+        h("option", { value: "fit-width" }, "Fit width"),
+        h("option", { value: "fit-page" }, "Fit page"),
+        ...ZOOM_STEPS.map((z) => h("option", { value: String(z) }, `${Math.round(z * 100)}%`)),
+        h("option", { value: "custom", hidden: true }, ""),
+      ),
+      h("button", { title: "Zoom in (Ctrl +)", onclick: () => zoomStep(1) }, "+"),
     ),
     state.view === "original" &&
       h(
@@ -895,8 +1343,9 @@ function renderToolbar() {
         h("button", { class: state.view === "original" ? "on" : "", onclick: () => setView("original") }, "Edit"),
         h("button", { class: state.view === "result" ? "on" : "", onclick: () => setView("result") }, "Result"),
       ),
-    h("button", { class: "btn primary", onclick: doExport, disabled: state.busy }, state.result ? "Export again" : "Apply & export"),
+    h("button", { class: "btn primary export", onclick: doExport, disabled: state.busy }, state.result ? "Export again" : "Apply & export"),
   ));
+  updateZoomControl();
 }
 
 function setMode(m: "draw" | "pick") {
@@ -985,6 +1434,12 @@ function buildShell() {
       "div",
       { class: "editor" },
       h("div", { id: "toolbar", class: "toolbar" }),
+      h("nav", { id: "thumbs", class: "thumbs", "aria-label": "Page thumbnails" }),
+      h("div", { id: "pages", class: "pages", tabindex: "0", "aria-label": "Document pages" }),
+      // On narrow screens the two panels share one scroll area under the pages.
+      h(
+        "div",
+        { class: "side" },
       h(
         "aside",
         { class: "panel left" },
@@ -1017,7 +1472,6 @@ function buildShell() {
         ),
         h("div", { id: "hits", class: "hits" }),
       ),
-      h("div", { id: "pages", class: "pages" }),
       h(
         "aside",
         { class: "panel right" },
@@ -1025,6 +1479,7 @@ function buildShell() {
         h("div", { id: "marks" }),
         h("h2", {}, "Clean-up"),
         h("div", { id: "cleanup", class: "cleanup" }),
+      ),
       ),
     ),
     h(
@@ -1058,7 +1513,9 @@ function buildShell() {
     if (document.body.dataset.screen !== "editor") return;
     const t = e.target as HTMLElement;
     if (t.matches("input, textarea, select")) return;
+    if (document.querySelector("dialog[open]")) return;
     const mod = e.ctrlKey || e.metaKey;
+    if (navKey(e)) return;
     if (mod && e.key.toLowerCase() === "z") {
       e.preventDefault();
       if (e.shiftKey) redo();
@@ -1084,10 +1541,14 @@ function buildShell() {
   let rt = 0;
   window.addEventListener("resize", () => {
     clearTimeout(rt);
-    rt = window.setTimeout(() => state.pages.length && renderToolbar(), 150);
+    rt = window.setTimeout(() => {
+      if (!state.pages.length || document.body.dataset.screen !== "editor") return;
+      if (state.zoomMode !== "custom") zoomFit(state.zoomMode);
+    }, 150);
   });
 
   setupDrawing();
+  setupNavigation();
 }
 
 function feature(title: string, body: string) {

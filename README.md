@@ -18,6 +18,19 @@ Your file is never uploaded. All processing happens in your browser tab.
 | **Document clean-up** | Strips metadata (Info dictionary and XMP), JavaScript and auto-run actions, embedded files, comments/annotations, links; flattens or removes form fields; can remove all images or all vector graphics; deletes whole pages. |
 | **Verification** | After export, shows the exact text an LLM would extract from the new file and checks that none of the redacted text is left. The text can be copied or downloaded as `.txt`. |
 
+## Navigation and shortcuts
+
+The top bar and toolbar always stay on screen; only the pages and side panels scroll.
+
+| Action | How |
+|---|---|
+| Zoom at the cursor | Ctrl/Cmd + mouse wheel, trackpad pinch, or two-finger pinch on touch screens |
+| Zoom steps / fit | Ctrl + `+` / Ctrl + `−`, Ctrl + `0` (fit width), or the zoom menu (Fit width, Fit page, 25–400%) |
+| Pan | Drag empty space in *Pick objects* mode, hold **Space** and drag, or drag with the middle mouse button |
+| Change page | PageUp / PageDown (or ← / → when the page fits the width), Home / End, type a number in the page box, or click a thumbnail |
+| Thumbnails | Toggle with **▤**. Red badges show how many redactions a page has |
+| Tools | **P** Pick objects (default), **D** Draw area, **V** Original / After deletion, **Delete** remove selection, **Esc** clear selection, Ctrl+Z / Ctrl+Shift+Z undo / redo, Ctrl+F find |
+
 ## Architecture
 
 ```
