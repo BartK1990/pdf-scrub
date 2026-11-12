@@ -23,6 +23,7 @@ const api: Api = {
   },
   pages: (which) => need().pages(which),
   render: (index, scale, which) => need().render(index, scale, which),
+  renderPreview: (index, scale, marks, opts) => need().renderPreview(index, scale, marks, opts),
   objects: (index) => need().objects(index),
   search: (pattern, opts) => need().search(pattern, opts),
   hidden: () => need().findHiddenText(),

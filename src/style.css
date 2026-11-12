@@ -190,6 +190,11 @@ body[data-view="result"] .overlay { display: none; }
 }
 .mark:hover { background: rgba(201, 42, 42, 0.55); cursor: pointer; }
 .mark:hover .x { display: block; }
+/* Live preview: the canvas already shows the result, so marks are only outlined. */
+.mark.live { background: transparent; outline: 1.5px dashed var(--danger); }
+.mark.live:hover { background: rgba(201, 42, 42, 0.18); }
+.obj.selected { background: rgba(59, 91, 219, 0.28); outline: 2px solid var(--accent); }
+.btn.danger:not(:disabled) { background: var(--danger); color: #fff; border-color: transparent; }
 .hit { position: absolute; background: var(--hit); outline: 1px solid rgba(202, 138, 4, 0.8); pointer-events: none; }
 .obj { position: absolute; border-radius: 2px; cursor: pointer; }
 .obj:hover { background: var(--pick); outline: 1.5px solid var(--pick-line); }

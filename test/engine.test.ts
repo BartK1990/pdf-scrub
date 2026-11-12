@@ -106,3 +106,23 @@ test("area redaction removes vector shapes (pixel check)", () => {
   assert.deepEqual(blueAt(session, "result"), [255, 255, 255]);
   session.close();
 });
+
+test("live preview matches the export and leaves the open document untouched", () => {
+  const { session } = PdfSession.open(sample);
+  const hits = session.search("Jane Doe");
+  const marks = [...marksFrom(hits), { id: "img", page: 0, rect: [70, 318, 194, 382] as [number, number, number, number], source: "object" as const, label: "img" }];
+  const opts = { ...DEFAULT_EXPORT_OPTIONS, stripMetadata: false, removeAnnotations: false, removeAttachments: false, removeJavaScript: false, forms: "keep" as const };
+  const before = session.render(0, 1);
+  const preview = session.renderPreview(0, 1, marks, opts);
+  session.export(marks, opts);
+  const exported = session.render(0, 1, "result");
+  assert.equal(preview.width, exported.width);
+  let diff = 0;
+  for (let i = 0; i < preview.pixels.length; i++) if (preview.pixels[i] !== exported.pixels[i]) diff++;
+  assert.ok(diff / preview.pixels.length < 0.001, `preview differs from export in ${diff} bytes`);
+  // The preview did something, and the original stays intact (text still searchable).
+  assert.notDeepEqual(preview.pixels, before.pixels);
+  assert.equal(session.search("Jane Doe").length, 2);
+  assert.deepEqual([...session.render(0, 1).pixels.slice(0, 64)], [...before.pixels.slice(0, 64)]);
+  session.close();
+});

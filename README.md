@@ -11,7 +11,8 @@ Your file is never uploaded. All processing happens in your browser tab.
 | | |
 |---|---|
 | **Real redaction** | Removes the text, image pixels and vector drawings under each marked area from the file itself. Drawing a black box over text, as many editors do, leaves the text in the file for an LLM to read. |
-| **Three ways to mark content** | Drag a rectangle over an area; click on text lines, paragraphs or images ("Pick objects"); or search (plain text, whole word, regex). |
+| **Three ways to mark content** | Drag a rectangle over an area; select text lines, paragraphs or images in *Pick objects* (click, Shift+click for more) and press **Delete**; or search (plain text, whole word, regex). |
+| **Live preview** | Pages show what the export will look like: deleted content disappears right away, rendered by the same redaction code the export uses. Switch between *Original* and *After deletion* (or press **V**). Undo with Ctrl+Z. |
 | **Detectors** | E-mails, phone numbers, IBANs (checksum-validated), payment cards (Luhn-validated), IP addresses, URLs, dates. |
 | **Hidden-text scan** | Finds white, microscopic and off-page text. People can't see it but LLMs read it, which makes it a common way to hide prompt-injection text. |
 | **Document clean-up** | Strips metadata (Info dictionary and XMP), JavaScript and auto-run actions, embedded files, comments/annotations, links; flattens or removes form fields; can remove all images or all vector graphics; deletes whole pages. |
@@ -41,6 +42,7 @@ Design decisions:
   - *pdf.js + pdf-lib:* good viewer and writer, but no content removal, so "redaction" would only be a cosmetic overlay.
   - *Rasterize every page:* safe, but the text is gone, which defeats the purpose when the file is for an LLM.
 - **Heavy work runs in a Web Worker**, so the UI never freezes on large files. Pixel buffers are transferred, not copied.
+- **Live preview without touching the document.** To preview a page, the worker copies it into a scratch document (`graftPage`), applies that page's marks there and renders it. The open document stays pristine, and only pages whose marks changed are re-rendered.
 - **Non-destructive editing.** Marks are just rectangles in PDF coordinates held in the UI, so undo/redo is cheap. On export the worker reopens the *original* bytes and applies every mark in one pass. The order matters: flatten forms → remove annotations/links/JS/attachments/metadata → redact → whole-page passes (all images / all vectors) → delete pages → save with `garbage,clean,sanitize`.
 - **Framework-free UI.** About 9 KB gzipped. Nearly all of the download is the WASM engine (about 4.8 MB gzipped), which the browser caches after the first visit.
 - **The engine is DOM-free**, so the same `engine.ts` runs in Node for tests. The tests check results with poppler's `pdftotext`, a separate PDF library, rather than trusting MuPDF to grade its own output.

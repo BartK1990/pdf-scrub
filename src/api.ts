@@ -16,6 +16,12 @@ export interface Api {
   open(bytes: Uint8Array, password?: string): OpenResult;
   pages(which: Which): PageInfo[];
   render(index: number, scale: number, which: Which): { width: number; height: number; pixels: Uint8ClampedArray };
+  renderPreview(
+    index: number,
+    scale: number,
+    marks: Mark[],
+    opts: Pick<ExportOptions, "blackBoxes" | "removeAllImages" | "removeAllVectors">,
+  ): { width: number; height: number; pixels: Uint8ClampedArray };
   objects(index: number): PageObject[];
   search(pattern: string, opts: { regex?: boolean; caseSensitive?: boolean; wholeWord?: boolean }): SearchHit[];
   hidden(): HiddenTextHit[];

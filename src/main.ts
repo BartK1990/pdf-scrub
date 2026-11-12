@@ -64,7 +64,14 @@ const state = {
   deleted: new Set<number>(),
   result: null as ExportResult | null,
   busy: false,
+  /** Show pages as they will look after export (deletions applied). */
+  livePreview: true,
+  /** Objects selected in Pick mode, waiting for Delete. */
+  selection: new Map<string, Sel>(),
 };
+
+type Sel = { page: number; rect: Rect; label: string; kind: PageObject["kind"] };
+const selKey = (page: number, o: PageObject) => `${page}:${o.kind}:${o.rect.map((v) => v.toFixed(1)).join(",")}`;
 
 const objectsCache = new Map<number, PageObject[]>();
 let markSeq = 0;
@@ -105,6 +112,7 @@ function redo() {
 }
 function marksChanged() {
   invalidateResult();
+  repaintRendered();
   renderAllOverlays();
   renderMarksPanel();
   renderToolbar();
@@ -160,6 +168,7 @@ async function openFile(file: File) {
       deleted: new Set<number>(),
     });
     objectsCache.clear();
+    state.selection.clear();
     document.body.dataset.screen = "editor";
     state.zoom = fitZoom();
     renderEditor();
@@ -182,8 +191,34 @@ function fitZoom(): number {
 /* ------------------------------------------------------------------ */
 
 let observer: IntersectionObserver | null = null;
-const renderedScale = new Map<string, number>();
+/** What each canvas currently shows, so unchanged pages are not re-rendered. */
+const renderedScale = new Map<string, string>();
+const paintToken = new Map<number, number>();
 let renderGen = 0;
+let tokenSeq = 0;
+
+const previewOpts = () => ({
+  blackBoxes: state.opts.blackBoxes,
+  removeAllImages: state.opts.removeAllImages,
+  removeAllVectors: state.opts.removeAllVectors,
+});
+
+/** Marks + options that affect how one page looks after export. */
+function pageSignature(index: number): string {
+  if (state.view !== "original" || !state.livePreview) return "plain";
+  const o = previewOpts();
+  const marks = state.marks.filter((m) => m.page === index);
+  if (!marks.length && !o.removeAllImages && !o.removeAllVectors) return "plain";
+  return JSON.stringify([o, marks.map((m) => m.rect)]);
+}
+
+/** Re-render pages already on screen whose look changed. */
+function repaintRendered() {
+  for (const key of renderedScale.keys()) {
+    const [view, idx] = key.split(":");
+    if (view === state.view) void paintPage(Number(idx));
+  }
+}
 
 function currentPages(): PageInfo[] {
   return state.view === "result" ? state.resultPages : state.pages;
@@ -248,13 +283,21 @@ function buildPages() {
 async function paintPage(index: number) {
   const key = `${state.view}:${index}`;
   const scale = state.zoom * (window.devicePixelRatio || 1);
-  if (renderedScale.get(key) === scale) return;
-  renderedScale.set(key, scale);
+  const sig = pageSignature(index);
+  const want = `${scale}|${sig}`;
+  if (renderedScale.get(key) === want) return;
+  renderedScale.set(key, want);
   const gen = renderGen;
+  const token = ++tokenSeq;
+  paintToken.set(index, token);
   const view = state.view;
   try {
-    const img = await remote.render(index, scale, view);
-    if (gen !== renderGen) return;
+    const img =
+      sig === "plain"
+        ? await remote.render(index, scale, view)
+        : await remote.renderPreview(index, scale, state.marks.filter((m) => m.page === index), previewOpts());
+    // Drop stale answers: the page changed again while this one was rendering.
+    if (gen !== renderGen || paintToken.get(index) !== token) return;
     const canvas = $(`#pages .page[data-page="${index}"] canvas`) as HTMLCanvasElement | null;
     if (!canvas) return;
     canvas.width = img.width;
@@ -272,6 +315,14 @@ function setZoom(z: number) {
   state.zoom = Math.min(4, Math.max(0.25, +z.toFixed(2)));
   buildPages();
   host.scrollTop = ratio * host.scrollHeight;
+  renderToolbar();
+}
+
+function setLivePreview(on: boolean) {
+  state.livePreview = on;
+  document.body.dataset.live = String(on);
+  repaintRendered();
+  renderAllOverlays();
   renderToolbar();
 }
 
@@ -333,24 +384,20 @@ function renderOverlay(index: number) {
         renderOverlay(index);
       });
     } else {
+      const pageMarks = state.marks.filter((m) => m.page === index);
       for (const o of objs) {
         if (o.kind !== "image" && o.kind !== state.pickLevel) continue;
+        // Already deleted: nothing left to pick there.
+        if (pageMarks.some((m) => covers(m.rect, o.rect))) continue;
+        const key = selKey(index, o);
         overlay.append(
           h("div", {
-            class: `obj obj-${o.kind}`,
-            title: `${o.kind === "image" ? "" : "Text: "}${o.label.slice(0, 200)}\nClick to redact`,
+            class: `obj obj-${o.kind}` + (state.selection.has(key) ? " selected" : ""),
+            title: `${o.kind === "image" ? "" : "Text: "}${o.label.slice(0, 200)}\nClick to select, Shift+click to add, Delete to remove`,
             style: pct(page, o.rect),
             onpointerdown: (e: PointerEvent) => {
               e.stopPropagation();
-              const pad = 0.5;
-              addMarks([
-                {
-                  page: index,
-                  rect: [o.rect[0] - pad, o.rect[1] - pad, o.rect[2] + pad, o.rect[3] + pad],
-                  source: "object",
-                  label: o.kind === "image" ? o.label : o.label.slice(0, 120),
-                },
-              ]);
+              toggleSelect(index, o, e.shiftKey || e.ctrlKey || e.metaKey);
             },
           }),
         );
@@ -371,7 +418,7 @@ function renderOverlay(index: number) {
       h(
         "div",
         {
-          class: `mark src-${m.source}`,
+          class: `mark src-${m.source}` + (state.livePreview ? " live" : ""),
           style: pct(page, m.rect),
           title: `${m.label}\nClick to undo this redaction`,
           onpointerdown: (e: PointerEvent) => {
@@ -383,6 +430,50 @@ function renderOverlay(index: number) {
       ),
     );
   }
+}
+
+function covers(outer: Rect, inner: Rect) {
+  const e = 1;
+  return outer[0] <= inner[0] + e && outer[1] <= inner[1] + e && outer[2] >= inner[2] - e && outer[3] >= inner[3] - e;
+}
+
+function toggleSelect(page: number, o: PageObject, additive: boolean) {
+  const key = selKey(page, o);
+  const was = state.selection.has(key);
+  const touched = new Set([page, ...[...state.selection.values()].map((x) => x.page)]);
+  if (!additive) state.selection.clear();
+  if (was && (additive || touched.size === 1)) state.selection.delete(key);
+  else state.selection.set(key, { page, rect: o.rect, label: o.label, kind: o.kind });
+  for (const p of touched) renderOverlay(p);
+  renderToolbar();
+}
+
+function clearSelection() {
+  if (!state.selection.size) return;
+  const pages = new Set([...state.selection.values()].map((x) => x.page));
+  state.selection.clear();
+  for (const p of pages) renderOverlay(p);
+  renderToolbar();
+}
+
+/** Delete key: turn the selected objects into redactions. */
+function deleteSelection() {
+  if (!state.selection.size) {
+    if (state.mode === "pick") toast("Click objects on the page to select them first.");
+    return;
+  }
+  const pad = 0.5;
+  const sel = [...state.selection.values()];
+  state.selection.clear();
+  addMarks(
+    sel.map((o) => ({
+      page: o.page,
+      rect: [o.rect[0] - pad, o.rect[1] - pad, o.rect[2] + pad, o.rect[3] + pad] as Rect,
+      source: "object" as const,
+      label: o.kind === "image" ? o.label : o.label.slice(0, 120),
+    })),
+  );
+  toast(`Removed ${sel.length} object${sel.length > 1 ? "s" : ""}. Ctrl+Z to undo.`);
 }
 
 function setupDrawing() {
@@ -397,6 +488,10 @@ function setupDrawing() {
   };
 
   host.addEventListener("pointerdown", (e) => {
+    if (state.view === "original" && state.mode === "pick" && !e.shiftKey && !e.ctrlKey && !e.metaKey) {
+      if ((e.target as HTMLElement).closest(".overlay")) clearSelection();
+      return;
+    }
     if (state.view !== "original" || state.mode !== "draw" || e.button !== 0) return;
     const overlay = (e.target as HTMLElement).closest(".overlay") as HTMLElement | null;
     if (!overlay) return;
@@ -555,7 +650,7 @@ function renderMarksPanel() {
     ),
   );
   if (!n) {
-    el.append(h("p", { class: "muted small" }, "Drag on a page to cover an area, switch to Pick to click on text and images, or use Find."));
+    el.append(h("p", { class: "muted small" }, "Drag on a page to remove an area, or switch to Pick, click text or images (Shift+click for more) and press Delete. Find works too."));
   } else {
     const ul = h("ul", { class: "list" });
     for (const m of [...state.marks].reverse().slice(0, 500)) {
@@ -597,6 +692,7 @@ function renderCleanup() {
         onchange: (e: Event) => {
           (state.opts as unknown as Record<string, unknown>)[key] = (e.target as HTMLInputElement).checked;
           invalidateResult();
+          repaintRendered();
         },
       }),
       h("span", {}, h("span", { class: "opt-title" }, title), h("span", { class: "opt-found" }, found)),
@@ -765,6 +861,12 @@ function renderToolbar() {
         h("button", { class: state.pickLevel === "line" ? "on" : "", onclick: () => setPickLevel("line") }, "Lines"),
         h("button", { class: state.pickLevel === "block" ? "on" : "", onclick: () => setPickLevel("block") }, "Paragraphs"),
       ),
+    state.mode === "pick" &&
+      h(
+        "button",
+        { class: "btn small danger", disabled: !state.selection.size, title: "Remove the selected objects (Delete)", onclick: deleteSelection },
+        `Delete${state.selection.size ? ` (${state.selection.size})` : ""}`,
+      ),
     h(
       "div",
       { class: "seg" },
@@ -778,6 +880,13 @@ function renderToolbar() {
       h("button", { title: "Fit width", onclick: () => setZoom(fitZoom()) }, `${Math.round(state.zoom * 100)}%`),
       h("button", { title: "Zoom in", onclick: () => setZoom(state.zoom * 1.2) }, "+"),
     ),
+    state.view === "original" &&
+      h(
+        "div",
+        { class: "seg", role: "group", "aria-label": "Page display" },
+        h("button", { class: !state.livePreview ? "on" : "", title: "Show the original pages with redactions outlined (V)", onclick: () => setLivePreview(false) }, "Original"),
+        h("button", { class: state.livePreview ? "on" : "", title: "Show pages as they will look after export (V)", onclick: () => setLivePreview(true) }, "After deletion"),
+      ),
     h("span", { class: "grow" }),
     state.result &&
       h(
@@ -792,6 +901,7 @@ function renderToolbar() {
 
 function setMode(m: "draw" | "pick") {
   state.mode = m;
+  if (m !== "pick") state.selection.clear();
   if (state.view !== "original") setView("original");
   renderToolbar();
   renderAllOverlays();
@@ -805,6 +915,7 @@ function setPickLevel(l: "line" | "block") {
 function renderEditor() {
   $("#doc-name").textContent = state.fileName;
   document.body.dataset.view = state.view;
+  document.body.dataset.live = String(state.livePreview);
   renderToolbar();
   buildPages();
   renderHits();
@@ -957,7 +1068,12 @@ function buildShell() {
       e.preventDefault();
       redo();
       renderToolbar();
-    } else if (!mod && e.key === "d") setMode("draw");
+    } else if (!mod && (e.key === "Delete" || e.key === "Backspace")) {
+      e.preventDefault();
+      deleteSelection();
+    } else if (e.key === "Escape") clearSelection();
+    else if (!mod && e.key === "v") setLivePreview(!state.livePreview);
+    else if (!mod && e.key === "d") setMode("draw");
     else if (!mod && e.key === "p") setMode("pick");
     else if (mod && e.key.toLowerCase() === "f") {
       e.preventDefault();

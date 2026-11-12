@@ -85,6 +85,54 @@ function pageChars(page: mupdf.PDFPage): { text: string; chars: Char[] } {
   return { text: chars.map((ch) => ch.c).join(""), chars };
 }
 
+type RedactOptions = Pick<ExportOptions, "blackBoxes" | "removeAllImages" | "removeAllVectors">;
+
+/** Apply marks (and whole-page passes) to one page. Shared by export and preview. */
+function redactPage(page: mupdf.PDFPage, marks: Mark[], opts: RedactOptions): number {
+  if (marks.length) {
+    for (const m of marks) page.createAnnotation("Redact").setRect(clampRect(m.rect));
+    page.applyRedactions(
+      opts.blackBoxes,
+      mupdf.PDFPage.REDACT_IMAGE_PIXELS,
+      mupdf.PDFPage.REDACT_LINE_ART_REMOVE_IF_COVERED,
+      mupdf.PDFPage.REDACT_TEXT_REMOVE,
+    );
+  }
+  // Whole-page passes that strip one kind of content only.
+  if (opts.removeAllImages || opts.removeAllVectors) {
+    page.createAnnotation("Redact").setRect(page.getBounds());
+    page.applyRedactions(
+      false,
+      opts.removeAllImages ? mupdf.PDFPage.REDACT_IMAGE_REMOVE : mupdf.PDFPage.REDACT_IMAGE_NONE,
+      opts.removeAllVectors ? mupdf.PDFPage.REDACT_LINE_ART_REMOVE_IF_TOUCHED : mupdf.PDFPage.REDACT_LINE_ART_NONE,
+      mupdf.PDFPage.REDACT_TEXT_NONE,
+    );
+  }
+  return marks.length;
+}
+
+/** Rasterize a page to RGBA (scale 1 = 72 dpi). */
+function rasterize(page: mupdf.Page, scale: number) {
+  const pix = page.toPixmap(mupdf.Matrix.scale(scale, scale), mupdf.ColorSpace.DeviceRGB, false, true);
+  const w = pix.getWidth();
+  const h = pix.getHeight();
+  const rgb = pix.getPixels();
+  const stride = pix.getStride();
+  const rgba = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    let s = y * stride;
+    let d = y * w * 4;
+    for (let x = 0; x < w; x++) {
+      rgba[d++] = rgb[s++];
+      rgba[d++] = rgb[s++];
+      rgba[d++] = rgb[s++];
+      rgba[d++] = 255;
+    }
+  }
+  pix.destroy();
+  return { width: w, height: h, pixels: rgba };
+}
+
 /* ------------------------------------------------------------------ */
 /* Session: one opened document                                        */
 /* ------------------------------------------------------------------ */
@@ -138,27 +186,32 @@ export class PdfSession {
 
   /** Render a page to RGBA pixels at the given scale (1 = 72 dpi). */
   render(index: number, scale: number, which: "original" | "result" = "original") {
-    const doc = this.docFor(which);
-    const page = doc.loadPage(index);
-    const pix = page.toPixmap(mupdf.Matrix.scale(scale, scale), mupdf.ColorSpace.DeviceRGB, false, true);
-    const w = pix.getWidth();
-    const h = pix.getHeight();
-    const rgb = pix.getPixels();
-    const stride = pix.getStride();
-    const rgba = new Uint8ClampedArray(w * h * 4);
-    for (let y = 0; y < h; y++) {
-      let s = y * stride;
-      let d = y * w * 4;
-      for (let x = 0; x < w; x++) {
-        rgba[d++] = rgb[s++];
-        rgba[d++] = rgb[s++];
-        rgba[d++] = rgb[s++];
-        rgba[d++] = 255;
-      }
+    const page = this.docFor(which).loadPage(index);
+    try {
+      return rasterize(page, scale);
+    } finally {
+      page.destroy();
     }
-    pix.destroy();
-    page.destroy();
-    return { width: w, height: h, pixels: rgba };
+  }
+
+  /**
+   * Render one page as it will look after export, without touching the
+   * open document: the page is copied into a scratch document first.
+   */
+  renderPreview(index: number, scale: number, marks: Mark[], opts: RedactOptions) {
+    const scratch = new mupdf.PDFDocument();
+    try {
+      scratch.graftPage(0, this.doc, index);
+      const page = scratch.loadPage(0);
+      try {
+        redactPage(page, marks.filter((m) => m.page === index), opts);
+        return rasterize(page, scale);
+      } finally {
+        page.destroy();
+      }
+    } finally {
+      scratch.destroy();
+    }
   }
 
   /** Selectable objects on a page: text blocks, text lines and images. */
@@ -409,32 +462,8 @@ export class PdfSession {
       }
       let applied = 0;
       for (let i = 0; i < n; i++) {
-        const pageMarks = byPage.get(i);
         const page = doc.loadPage(i);
-        if (pageMarks?.length) {
-          for (const m of pageMarks) {
-            const annot = page.createAnnotation("Redact");
-            annot.setRect(clampRect(m.rect));
-            applied++;
-          }
-          page.applyRedactions(
-            opts.blackBoxes,
-            mupdf.PDFPage.REDACT_IMAGE_PIXELS,
-            mupdf.PDFPage.REDACT_LINE_ART_REMOVE_IF_COVERED,
-            mupdf.PDFPage.REDACT_TEXT_REMOVE,
-          );
-        }
-        // Whole-page passes that strip one kind of content only.
-        if (opts.removeAllImages || opts.removeAllVectors) {
-          const annot = page.createAnnotation("Redact");
-          annot.setRect(page.getBounds());
-          page.applyRedactions(
-            false,
-            opts.removeAllImages ? mupdf.PDFPage.REDACT_IMAGE_REMOVE : mupdf.PDFPage.REDACT_IMAGE_NONE,
-            opts.removeAllVectors ? mupdf.PDFPage.REDACT_LINE_ART_REMOVE_IF_TOUCHED : mupdf.PDFPage.REDACT_LINE_ART_NONE,
-            mupdf.PDFPage.REDACT_TEXT_NONE,
-          );
-        }
+        applied += redactPage(page, byPage.get(i) ?? [], opts);
         page.destroy();
       }
 
