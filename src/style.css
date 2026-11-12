@@ -72,8 +72,23 @@ body[data-screen="editor"] .landing, body[data-screen="editor"] .landing-only { 
   padding: 10px 16px; background: var(--surface); border-bottom: 1px solid var(--border);
   position: sticky; top: 0; z-index: 5;
 }
-.brand { display: flex; gap: 8px; align-items: center; font-weight: 700; font-size: 1.05rem; color: var(--text); text-decoration: none; }
-.logo { color: var(--accent); font-size: 1.3rem; }
+.short { display: none; }
+.brand { white-space: nowrap; flex: none; display: flex; gap: 8px; align-items: center; font-weight: 700; font-size: 1.05rem; color: var(--text); text-decoration: none; }
+.icon-svg { display: inline-flex; align-items: center; line-height: 0; }
+.icon-svg.logo svg { width: 26px; height: 26px; filter: drop-shadow(0 1px 2px rgba(59, 91, 219, 0.35)); }
+.author { color: var(--muted); text-decoration: none; font-size: 0.88rem; white-space: nowrap; }
+.author .author-name { color: var(--text); font-weight: 600; }
+.author:hover .author-name { color: var(--accent); text-decoration: underline; }
+.gh {
+  display: inline-flex; align-items: center; gap: 8px; padding: 5px 10px; border-radius: 8px;
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); text-decoration: none;
+  font-size: 0.85rem; font-weight: 600; white-space: nowrap;
+}
+.gh:hover { background: var(--surface-2); border-color: var(--muted); }
+.gh-mark svg { width: 18px; height: 18px; }
+.gh-stat { display: inline-flex; align-items: center; gap: 4px; padding-left: 8px; border-left: 1px solid var(--border); color: var(--muted); font-weight: 600; }
+.gh-stat svg { width: 14px; height: 14px; }
+.gh:hover .gh-stat:first-of-type svg { color: #e3b341; }
 .doc-name { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .badge { font-size: 0.8rem; padding: 4px 10px; border-radius: 99px; background: var(--ok-bg); color: var(--ok-ink); white-space: nowrap; }
 
@@ -306,5 +321,9 @@ dialog p { margin: 0; }
   .toolbar .thumbs-toggle { display: none; }
   /* The export button stays pinned at the right while the tools scroll. */
   .toolbar .export { position: sticky; right: 0; margin-left: auto; box-shadow: -12px 0 12px -4px var(--surface); }
-  .topbar { padding: 8px 12px; }
+  .topbar { padding: 8px 12px; gap: 8px; }
+  .author-by, .gh-label { display: none; }
+  .long, .doc-name { display: none; }
+  .short { display: inline; }
+  body[data-screen="editor"] .author, body[data-screen="editor"] .gh-forks { display: none; }
 }

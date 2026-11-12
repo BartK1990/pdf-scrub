@@ -5,6 +5,9 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  # Daily rebuild so the star / fork counts on the page stay current.
+  schedule:
+    - cron: "37 4 * * *"
 
 permissions:
   contents: read
@@ -26,9 +29,22 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y poppler-utils
       - run: npm ci
       - run: npm test
+      - name: Read repository stats (baked into the page; the site itself never calls GitHub)
+        id: stats
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${{ github.repository }}" --jq '"stars=\(.stargazers_count)\nforks=\(.forks_count)"' > stats.txt; then
+            cat stats.txt >> "$GITHUB_OUTPUT"
+            cat stats.txt
+          else
+            echo "Could not read repository stats; building without them."
+          fi
       - run: npm run build
         env:
           VITE_REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+          VITE_REPO_STARS: ${{ steps.stats.outputs.stars }}
+          VITE_REPO_FORKS: ${{ steps.stats.outputs.forks }}
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'
         with:

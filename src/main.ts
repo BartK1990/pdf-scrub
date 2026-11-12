@@ -1,6 +1,7 @@
 import "./style.css";
 import { connect, RpcError } from "./api.ts";
 import { PRESETS } from "./engine/presets.ts";
+import { ICONS, LOGO, SITE, formatCount } from "./site.ts";
 import {
   DEFAULT_EXPORT_OPTIONS,
   type DocReport,
@@ -1391,11 +1392,32 @@ function buildShell() {
     h(
       "header",
       { class: "topbar" },
-      h("a", { class: "brand", href: "./" }, h("span", { class: "logo", "aria-hidden": "true" }, "▚"), "PDF Scrub"),
+      h("a", { class: "brand", href: "./" }, icon(LOGO, "logo"), "PDF Scrub"),
       h("span", { id: "doc-name", class: "doc-name" }),
       h("span", { class: "grow" }),
       h("span", { class: "badge", title: "No server: your file is processed in this browser tab and is never uploaded." }, "🔒 Stays on your device"),
-      h("button", { class: "btn small editor-only", onclick: pick }, "Open another PDF"),
+      h("button", { class: "btn small editor-only", onclick: pick, title: "Open another PDF" }, h("span", { class: "long" }, "Open another PDF"), h("span", { class: "short" }, "Open")),
+      h(
+        "a",
+        { class: "author", href: SITE.authorUrl, rel: "noopener", target: "_blank", title: `${SITE.author} on GitHub` },
+        h("span", { class: "author-by" }, "by "),
+        h("span", { class: "author-name" }, SITE.author),
+      ),
+      h(
+        "a",
+        {
+          class: "gh",
+          href: SITE.repoUrl,
+          rel: "noopener",
+          target: "_blank",
+          title: "Source code on GitHub" + (SITE.stars !== null ? ` · ${SITE.stars} stars · ${SITE.forks ?? 0} forks` : ""),
+          "aria-label": "Source code on GitHub",
+        },
+        icon(ICONS.github, "gh-mark"),
+        h("span", { class: "gh-label" }, "GitHub"),
+        SITE.stars !== null && h("span", { class: "gh-stat" }, icon(ICONS.star), formatCount(SITE.stars)),
+        SITE.forks !== null && h("span", { class: "gh-stat gh-forks" }, icon(ICONS.fork), formatCount(SITE.forks)),
+      ),
     ),
     // Landing
     h(
@@ -1488,7 +1510,10 @@ function buildShell() {
       "Open source. Built on ",
       h("a", { href: "https://mupdf.com/", rel: "noopener" }, "MuPDF"),
       " (AGPL-3.0) compiled to WebAssembly. ",
-      h("a", { href: "https://github.com/", id: "repo-link", rel: "noopener" }, "Source code"),
+      h("a", { href: SITE.repoUrl, rel: "noopener" }, "Source code"),
+      ". Made by ",
+      h("a", { href: SITE.authorUrl, rel: "noopener" }, SITE.author),
+      ".",
     ),
     h("div", { id: "busy", class: "busy", hidden: true }, h("div", { class: "spinner" }), h("span", { id: "busy-text" })),
     h("div", { id: "toast", class: "toast", role: "status", "aria-live": "polite" }),
@@ -1551,6 +1576,13 @@ function buildShell() {
   setupNavigation();
 }
 
+/** Wrap a static, trusted SVG string (from site.ts) in a span. */
+function icon(svgMarkup: string, cls = "") {
+  const span = h("span", { class: "icon-svg" + (cls ? " " + cls : "") });
+  span.innerHTML = svgMarkup;
+  return span;
+}
+
 function feature(title: string, body: string) {
   return h("div", { class: "feature" }, h("h3", {}, title), h("p", {}, body));
 }
@@ -1596,6 +1628,4 @@ function toast(msg: string) {
 
 document.body.dataset.screen = "landing";
 buildShell();
-const repo = import.meta.env.VITE_REPO_URL as string | undefined;
-if (repo) ($("#repo-link") as HTMLAnchorElement).href = repo;
 ready.catch((e) => toast(String(e.message ?? e)));

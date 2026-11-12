@@ -62,6 +62,7 @@ Design decisions:
 
 ```
 src/
+  site.ts             author, repository link, build-time star/fork counts, icons
   engine/engine.ts    PDF logic (MuPDF): render, objects, search, hidden text, report, export
   engine/presets.ts   PII detectors (regex + checksum validators)
   engine/types.ts     shared types and default export options
@@ -91,7 +92,8 @@ npm run preview    # serve dist/ locally
 
 1. Push to `main` on GitHub.
 2. In the repository go to **Settings → Pages → Build and deployment → Source** and choose **GitHub Actions**.
-3. The workflow tests, builds and publishes to `https://<user>.github.io/<repo>/`. The build uses relative paths, so any repository name works.
+3. The workflow reads the repository's star and fork counts with the GitHub API at build time and bakes them into the page header. Visitors' browsers never contact GitHub, so the site's security policy still blocks every request to other sites. A daily scheduled run keeps the counts current.
+4. The workflow tests, builds and publishes to `https://<user>.github.io/<repo>/`. The build uses relative paths, so any repository name works.
 
 ## Limits
 
